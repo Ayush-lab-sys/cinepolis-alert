@@ -1,7 +1,8 @@
 import requests
 
-BOT_TOKEN = "8706318691:AAFFg9nwV2DpYdJ-15AMQAQrhVVknv4Vnyo"
-CHAT_ID = "5314697440"
+
+
+
 
 url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
 
