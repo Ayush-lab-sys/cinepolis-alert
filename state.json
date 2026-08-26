@@ -1,10 +1,10 @@
 {
     "movie": null,
     "event_codes": [],
-    "language": "english",
+    "language": "hindi",
     "date": "2026-08-27",
     "cinema": "CBMC",
     "monitoring": false,
     "last_available": [],
-    "telegram_offset": 359721140
+    "telegram_offset": 359721143
 }
