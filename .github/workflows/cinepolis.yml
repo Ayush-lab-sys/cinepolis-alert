@@ -52,5 +52,6 @@ jobs:
             echo "No state changes."
           else
             git commit -m "Update bot state"
+            git pull --rebase origin "${GITHUB_REF_NAME}"
             git push origin HEAD:${{ github.ref_name }}
           fi
