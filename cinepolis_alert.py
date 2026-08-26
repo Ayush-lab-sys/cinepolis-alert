@@ -5,7 +5,53 @@ import threading
 import os
 from html import unescape
 from datetime import datetime
+import json
+import os
+import requests
+import re
 
+STATE_FILE = "state.json"
+
+
+def load_state():
+
+    try:
+
+        with open(
+            STATE_FILE,
+            "r",
+            encoding="utf-8"
+        ) as f:
+
+            return json.load(f)
+
+    except Exception:
+
+        return {
+            "movie": None,
+            "event_codes": [],
+            "language": "english",
+            "date": "2026-08-27",
+            "cinema": "CBMC",
+            "monitoring": False,
+            "last_available": [],
+            "telegram_offset": None
+        }
+
+
+def save_state():
+
+    with open(
+        STATE_FILE,
+        "w",
+        encoding="utf-8"
+    ) as f:
+
+        json.dump(
+            config,
+            f,
+            indent=4
+        )
 
 # ============================================================
 # TELEGRAM
@@ -21,17 +67,14 @@ TELEGRAM_CHAT_ID = "5314697440"
 # CONFIGURATION
 # ============================================================
 
-config = {
-    "movie": None,
-    "event_codes": [],
-    "language": "english",
-    "date": datetime.now().strftime("%Y-%m-%d"),
-    "cinema": "CBMC",
-    "monitoring": False
-}
+config = load_state()
 
-# Prevent duplicate notifications
-last_available = set()
+last_available = set(
+    config.get(
+        "last_available",
+        []
+    )
+)
 
 
 # ============================================================
@@ -258,12 +301,12 @@ def list_movies(chat_id):
 
         return
 
-    # Group movies by name
     grouped = {}
 
     for movie in movies:
 
         name = movie["movie"]
+
         key = name.lower()
 
         if key not in grouped:
@@ -280,11 +323,11 @@ def list_movies(chat_id):
     message = (
         "🎬 MOVIES AT CINEPOLIS BSR\n\n"
         f"📅 Date: {config['date']}\n"
-        f"🌐 Language: {config['language'].title()}\n\n"
+        f"🌐 Language: "
+        f"{config['language'].title()}\n\n"
         "👇 Select a movie:"
     )
 
-    # Telegram inline keyboard
     keyboard = []
 
     for movie in grouped.values():
@@ -307,7 +350,6 @@ def list_movies(chat_id):
         chat_id,
         reply_markup
     )
-
 # ============================================================
 # SELECT MOVIE
 # ============================================================
@@ -418,6 +460,11 @@ def select_movie(movie_name):
         current_results.extend(results)
 
     config["monitoring"] = True
+    config["last_available"] = list(
+    last_available
+    )
+
+    save_state()
 
     # ========================================================
     # RESPONSE
@@ -747,6 +794,11 @@ def notify_available(result):
     last_available.add(
         unique_id
     )
+    config["last_available"] = list(
+    last_available
+    )
+
+    save_state()
 
     message = (
         "🎟️ FRONT SEAT AVAILABLE!\n\n"
@@ -769,58 +821,59 @@ def notify_available(result):
 # MONITOR LOOP
 # ============================================================
 
-def monitor_loop():
+def monitor_once():
 
-    while True:
+    if not config["monitoring"]:
 
-        if config["monitoring"] and config["event_codes"]:
+        print("Monitoring is OFF.")
 
-            print(
-                "\nChecking BookMyShow..."
-            )
+        return
 
-            for event_info in list(
-                config["event_codes"]
-            ):
+    if not config["event_codes"]:
 
-                print(
-                    "Checking:",
-                    event_info["event_code"],
-                    event_info["format"]
-                )
+        print("No event codes configured.")
 
-                results = check_availability(
-                    event_info
-                )
+        return
 
-                for result in results:
+    print(
+        "\nChecking BookMyShow..."
+    )
 
-                    print(
-                        "FRONT SEAT AVAILABLE | "
-                        f"Time: {result['time']} | "
-                        f"Format: {result['format']} | "
-                        f"Status: {result['status']} | "
-                        f"Price: {result['price']}"
-                    )
+    for event_info in config["event_codes"]:
 
-                    notify_available(
-                        result
-                    )
+        print(
+            "Checking:",
+            event_info["event_code"],
+            event_info["format"]
+        )
 
-        else:
+        results = check_availability(
+            event_info
+        )
+
+        for result in results:
 
             print(
-                "Monitor idle..."
+                "FRONT SEAT AVAILABLE | "
+                f"Time: {result['time']} | "
+                f"Format: {result['format']} | "
+                f"Status: {result['status']} | "
+                f"Price: {result['price']}"
             )
 
-        time.sleep(300)
+            notify_available(result)
 
+save_state()
 
 # ============================================================
 # TELEGRAM API
 # ============================================================
 
-def get_updates(offset=None):
+def get_updates():
+
+    offset = config.get(
+        "telegram_offset"
+    )
 
     url = (
         f"https://api.telegram.org/bot"
@@ -828,7 +881,7 @@ def get_updates(offset=None):
     )
 
     params = {
-        "timeout": 30
+        "timeout": 5
     }
 
     if offset is not None:
@@ -840,7 +893,7 @@ def get_updates(offset=None):
         response = requests.get(
             url,
             params=params,
-            timeout=40
+            timeout=15
         )
 
         return response.json()
@@ -848,7 +901,7 @@ def get_updates(offset=None):
     except Exception as e:
 
         print(
-            "Telegram getUpdates error:",
+            "Telegram error:",
             e
         )
 
@@ -943,15 +996,22 @@ def handle_message(
 
         config["date"] = date_value
 
-        # Existing movie selection is no longer valid
         config["movie"] = None
         config["event_codes"] = []
+        config["monitoring"] = False
+
+        last_available.clear()
+
+        config["last_available"] = []
+
+        save_state()
 
         send_telegram(
             "✅ Date changed.\n\n"
             f"📅 {date_value}\n\n"
             "Use /movie to see movies "
-            "available on this date."
+            "available on this date.",
+            chat_id
         )
 
         return
@@ -982,6 +1042,13 @@ def handle_message(
 
         config["movie"] = None
         config["event_codes"] = []
+        config["monitoring"] = False
+
+        last_available.clear()
+
+        config["last_available"] = []
+
+        save_state()
 
         send_telegram(
             "✅ Language changed.\n\n"
@@ -1035,8 +1102,11 @@ def handle_message(
 
         config["monitoring"] = False
 
+        save_state()
+
         send_telegram(
-            "🛑 Monitoring stopped."
+            "🛑 Monitoring stopped.",
+            chat_id
         )
 
         return
@@ -1055,83 +1125,65 @@ def handle_message(
 # TELEGRAM BOT LOOP
 # ============================================================
 
-def telegram_loop():
 
-    print(
-        "Telegram bot started."
-    )
+def process_telegram_updates():
 
-    offset = None
+    result = get_updates()
 
-    while True:
+    if not result.get("ok"):
 
-        result = get_updates(
-            offset
+        return
+
+    for update in result.get(
+        "result",
+        []
+    ):
+
+        config["telegram_offset"] = (
+            update["update_id"] + 1
         )
 
-        if not result.get("ok"):
+        message = update.get(
+            "message"
+        )
 
-            time.sleep(5)
+        if message:
 
-            continue
+            chat_id = message[
+                "chat"
+            ]["id"]
 
-        for update in result.get(
-            "result",
-            []
-        ):
-
-            offset = (
-                update["update_id"] + 1
+            text = message.get(
+                "text",
+                ""
             )
 
-            # =================================================
-            # NORMAL MESSAGE
-            # =================================================
-
-            message = update.get(
-                "message"
+            print(
+                "Telegram:",
+                text
             )
 
-            if message:
-
-                chat_id = message[
-                    "chat"
-                ]["id"]
-
-                text = message.get(
-                    "text",
-                    ""
-                )
-
-                print(
-                    f"Telegram: {text}"
-                )
-
-                handle_message(
-                    chat_id,
-                    text
-                )
-
-                continue
-
-            # =================================================
-            # BUTTON CLICK
-            # =================================================
-
-            callback_query = update.get(
-                "callback_query"
+            handle_message(
+                chat_id,
+                text
             )
 
-            if callback_query:
+        callback_query = update.get(
+            "callback_query"
+        )
 
-                print(
-                    "Telegram button:",
-                    callback_query.get("data")
-                )
+        if callback_query:
 
-                handle_callback_query(
-                    callback_query
-                )
+            print(
+                "Telegram button:",
+                callback_query.get("data")
+            )
+
+            handle_callback_query(
+                callback_query
+            )
+
+    save_state()
 # ============================================================
 # MAIN
 # ============================================================
@@ -1141,13 +1193,8 @@ if __name__ == "__main__":
     if not TELEGRAM_BOT_TOKEN:
 
         print(
-            "\nERROR: TELEGRAM_BOT_TOKEN "
-            "is not set.\n"
-        )
-
-        print(
-            "PowerShell:\n"
-            '$env:TELEGRAM_BOT_TOKEN="YOUR_NEW_TOKEN"'
+            "ERROR: TELEGRAM_BOT_TOKEN "
+            "is not set."
         )
 
         exit()
@@ -1157,20 +1204,50 @@ if __name__ == "__main__":
     )
 
     print(
-        "CINEPOLIS BSR TELEGRAM ALERT"
+        "CINEPOLIS BSR GITHUB MONITOR"
     )
 
     print(
-        "================================\n"
+        "================================"
     )
 
-    # Start monitor in background
-    monitor_thread = threading.Thread(
-        target=monitor_loop,
-        daemon=True
+    print(
+        "Date:",
+        config["date"]
     )
 
-    monitor_thread.start()
+    print(
+        "Movie:",
+        config["movie"]
+    )
 
-    # Telegram command loop
-    telegram_loop()
+    print(
+        "Monitoring:",
+        config["monitoring"]
+    )
+
+    # -----------------------------------------
+    # Process Telegram commands/buttons
+    # -----------------------------------------
+
+    process_telegram_updates()
+
+    # -----------------------------------------
+    # Check current movie availability
+    # -----------------------------------------
+
+    monitor_once()
+
+    # -----------------------------------------
+    # Save everything
+    # -----------------------------------------
+
+    config["last_available"] = list(
+        last_available
+    )
+
+    save_state()
+
+    print(
+        "\nRun completed."
+    )
